@@ -1,12 +1,21 @@
 const express = require('express');
 const ethers = require('ethers');
 const bodyParser = require('body-parser');
+const fs = require('fs');
 
-// === 自訂參數 ===
-const RPC_URL = "http://localhost:8545"; // 你的RPC URL
-const ENTRY_POINT_ADDRESS = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"; // 替換成你的EntryPoint地址
-const PRIVATE_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"; // Bundler的私鑰（可以是Hardhat帳號）
-const PORT = 3000; // Bundler HTTP端口
+// 放在最上面避免 ReferenceError
+const counterABI = [
+    "event NumberChanged(string action, uint256 newValue)"
+];
+const counterInterface = new ethers.Interface(counterABI);
+
+// === 讀取 deploy.json ===
+const deployInfo = JSON.parse(fs.readFileSync('deploy.json'));
+const ENTRY_POINT_ADDRESS = deployInfo.entryPoint;
+
+const RPC_URL = "http://localhost:8545";
+const PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const PORT = 3000;
 
 // === 初始化 provider 和 signer ===
 const provider = new ethers.JsonRpcProvider(RPC_URL);
@@ -16,7 +25,10 @@ const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const app = express();
 app.use(bodyParser.json());
 
-// === Bundler收UserOperation的handler ===
+let pendingUserOps = [];
+
+console.log("🛠️ Bundler 啟動中，使用 EntryPoint 地址:", ENTRY_POINT_ADDRESS);
+
 app.post('/', async (req, res) => {
     const { method, params } = req.body;
 
@@ -27,50 +39,75 @@ app.post('/', async (req, res) => {
     const [userOp, entryPointAddr] = params;
 
     if (entryPointAddr.toLowerCase() !== ENTRY_POINT_ADDRESS.toLowerCase()) {
+        console.error(`❌ EntryPoint mismatch！收到: ${entryPointAddr} 期待: ${ENTRY_POINT_ADDRESS}`);
         return res.status(400).send({ error: 'EntryPoint address mismatch' });
     }
 
+    console.log("✅ 收到 UserOperation");
+    pendingUserOps.push(userOp);
+    res.send({ result: "UserOperation queued" });
+});
+
+setInterval(async () => {
+    if (pendingUserOps.length === 0) return;
+
     try {
-        console.log("✅ 收到 UserOperation");
+        console.log("🧾 正在處理 UserOperations:");
+        pendingUserOps.forEach((op, idx) => {
+            const callSig = op.callData.slice(0, 10);
+            const label = callSig === "0xe8927fbc" ? "increase" :
+                          callSig === "0x61bc221a" ? "decrease" :
+                          "unknown";
+            console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, 操作: ${label}`);
+        });
+
+        const userOpsArray = pendingUserOps.map(op => [
+            op.sender,
+            op.nonce,
+            op.initCode,
+            op.callData,
+            op.callGasLimit,
+            op.verificationGasLimit,
+            op.preVerificationGas,
+            op.maxFeePerGas,
+            op.maxPriorityFeePerGas,
+            op.paymasterAndData,
+            op.signature
+        ]);
 
         const iface = new ethers.Interface([
             "function handleOps((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes)[] ops, address beneficiary)"
         ]);
 
-        // 按正確順序轉成 tuple array
-        const userOpArray = [
-            userOp.sender,
-            userOp.nonce,
-            userOp.initCode,
-            userOp.callData,
-            userOp.callGasLimit,
-            userOp.verificationGasLimit,
-            userOp.preVerificationGas,
-            userOp.maxFeePerGas,
-            userOp.maxPriorityFeePerGas,
-            userOp.paymasterAndData,
-            userOp.signature
-        ];
+        const calldata = iface.encodeFunctionData("handleOps", [userOpsArray, wallet.address]);
 
-        const calldata = iface.encodeFunctionData("handleOps", [[userOpArray], wallet.address]);
-
-        // 發送交易
         const tx = await wallet.sendTransaction({
             to: ENTRY_POINT_ADDRESS,
             data: calldata,
-            gasLimit: 1000000n // ethers v6 要用 BigInt
+            gasLimit: 3_000_000n
         });
 
-        console.log(`📤 交易送出！txHash: ${tx.hash}`);
-        res.send({ txHash: tx.hash });
+        console.log(`📤 批次送出 ${pendingUserOps.length} 筆 UserOperation! txHash: ${tx.hash}`);
+
+        const receipt = await tx.wait();
+
+        for (const log of receipt.logs) {
+            try {
+                const parsed = counterInterface.parseLog(log);
+                console.log(`📊 [Counter 事件] ${parsed.args.action}: ${parsed.args.newValue.toString()}`);
+            } catch (e) {
+                // 不是 Counter 事件可略過
+            }
+        }
 
     } catch (err) {
-        console.error("❌ Bundler錯誤:", err);
-        res.status(500).send({ error: err.toString() });
+        console.error("❌ 批次送出失敗:", err.reason || err.message || err);
+    } finally {
+        // ✅ 無論成功或失敗都清空
+        pendingUserOps = [];
     }
-});
+}, 3000);
 
-// === 啟動 server ===
 app.listen(PORT, () => {
     console.log(`🚀 Bundler server listening at http://localhost:${PORT}`);
 });
