@@ -3,25 +3,35 @@ const ethers = require('ethers');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 
-// 放在最上面避免 ReferenceError
-const counterABI = [
-    "event NumberChanged(string action, uint256 newValue)"
-];
-const counterInterface = new ethers.Interface(counterABI);
-
-// === 讀取 deploy.json ===
+// === 讀取部署資訊 ===
 const deployInfo = JSON.parse(fs.readFileSync('deploy.json'));
 const ENTRY_POINT_ADDRESS = deployInfo.entryPoint;
+const COUNTER_ADDRESS = deployInfo.counter;
 
 const RPC_URL = "http://localhost:8545";
 const PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const PORT = 3000;
 
+// === ABI 定義 ===
+const counterABI = [
+    "function increase()",
+    "function decrease()",
+    "event NumberChanged(string action, uint256 newValue)"
+];
+
+const walletABI = [
+    "function execute(address target, bytes data)"
+];
+
 // === 初始化 provider 和 signer ===
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-// === 初始化 Express app ===
+// === 初始化 Interface
+const counterInterface = new ethers.Interface(counterABI);
+const walletInterface = new ethers.Interface(walletABI);
+
+// === Express 啟動 ===
 const app = express();
 app.use(bodyParser.json());
 
@@ -48,19 +58,35 @@ app.post('/', async (req, res) => {
     res.send({ result: "UserOperation queued" });
 });
 
+// === 每3秒執行一次 handleOps ===
 setInterval(async () => {
     if (pendingUserOps.length === 0) return;
 
     try {
         console.log("🧾 正在處理 UserOperations:");
+
+        // 嘗試解析 callData 內容
         pendingUserOps.forEach((op, idx) => {
-            const callSig = op.callData.slice(0, 10);
-            const label = callSig === "0xe8927fbc" ? "increase" :
-                          callSig === "0x61bc221a" ? "decrease" :
-                          "unknown";
-            console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, 操作: ${label}`);
+            try {
+                const decodedWalletCall = walletInterface.decodeFunctionData("execute", op.callData);
+                const target = decodedWalletCall.target;
+                const innerData = decodedWalletCall.data;
+
+                let label = "unknown";
+                if (target.toLowerCase() === COUNTER_ADDRESS.toLowerCase()) {
+                    try {
+                        const parsed = counterInterface.parseTransaction({ data: innerData });
+                        label = parsed.name;
+                    } catch {}
+                }
+
+                console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, 呼叫: ${label}`);
+            } catch {
+                console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, callData 無法解譯`);
+            }
         });
 
+        // 呼叫 handleOps
         const userOpsArray = pendingUserOps.map(op => [
             op.sender,
             op.nonce,
@@ -75,11 +101,11 @@ setInterval(async () => {
             op.signature
         ]);
 
-        const iface = new ethers.Interface([
+        const entryPointInterface = new ethers.Interface([
             "function handleOps((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes)[] ops, address beneficiary)"
         ]);
 
-        const calldata = iface.encodeFunctionData("handleOps", [userOpsArray, wallet.address]);
+        const calldata = entryPointInterface.encodeFunctionData("handleOps", [userOpsArray, wallet.address]);
 
         const tx = await wallet.sendTransaction({
             to: ENTRY_POINT_ADDRESS,
@@ -91,23 +117,25 @@ setInterval(async () => {
 
         const receipt = await tx.wait();
 
+        // 印出 Counter 合約的事件
         for (const log of receipt.logs) {
             try {
                 const parsed = counterInterface.parseLog(log);
                 console.log(`📊 [Counter 事件] ${parsed.args.action}: ${parsed.args.newValue.toString()}`);
             } catch (e) {
-                // 不是 Counter 事件可略過
+                // 非 counter 事件，忽略
             }
         }
 
     } catch (err) {
         console.error("❌ 批次送出失敗:", err.reason || err.message || err);
     } finally {
-        // ✅ 無論成功或失敗都清空
+        // 清空佇列
         pendingUserOps = [];
     }
 }, 3000);
 
+// === 啟動伺服器 ===
 app.listen(PORT, () => {
     console.log(`🚀 Bundler server listening at http://localhost:${PORT}`);
 });
