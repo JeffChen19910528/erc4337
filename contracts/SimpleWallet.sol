@@ -5,6 +5,8 @@ contract SimpleWallet {
     address public owner;
     address public entryPoint;
 
+    uint256 public nonce;
+
     constructor(address _owner, address _entryPoint) {
         owner = _owner;
         entryPoint = _entryPoint;
@@ -13,9 +15,11 @@ contract SimpleWallet {
     function validateUserOp(
         bytes calldata, 
         bytes32, 
-        uint256
+        uint256 userOpNonce
     ) external returns (uint256 validUntil, uint256 validAfter) {
         require(msg.sender == entryPoint, "Caller not EntryPoint");
+        require(userOpNonce == nonce, "Invalid nonce");
+        nonce++;
         return (type(uint256).max, 0);
     }
 

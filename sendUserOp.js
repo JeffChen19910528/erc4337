@@ -24,8 +24,13 @@ async function main() {
 
     const nonceStart = await provider.getTransactionCount(SIMPLE_WALLET_ADDRESS);
 
-    // 👉 修改這裡的順序和長度即可控制 TOD 模擬內容
-    const actions = ["increase", "decrease", "decrease", "decrease"]; // 多筆或重複都可以
+    // 🧪 測試不同 maxFeePerGas 影響排序（單位: wei）
+    const actions = [
+        { action: "increase", fee: 10_000_000_000 },  // 高手續費
+        { action: "decrease", fee: 9_000_000_000 },
+        { action: "decrease", fee: 8_000_000_000 },
+        { action: "decrease", fee: 7_000_000_000 }     // 最低手續費
+    ];
 
     const baseUserOp = {
         sender: SIMPLE_WALLET_ADDRESS,
@@ -33,27 +38,28 @@ async function main() {
         callGasLimit: ethers.toBeHex(150000),
         verificationGasLimit: ethers.toBeHex(150000),
         preVerificationGas: ethers.toBeHex(20000),
-        maxFeePerGas: ethers.toBeHex(10n ** 9n),
-        maxPriorityFeePerGas: ethers.toBeHex(1n ** 9n),
+        maxPriorityFeePerGas: ethers.toBeHex(1e9),
         paymasterAndData: "0x",
         signature: "0x"
     };
 
-    await Promise.all(actions.map(async (action, idx) => {
+    for (let i = 0; i < actions.length; i++) {
+        const { action, fee } = actions[i];
         const userOp = {
             ...baseUserOp,
-            nonce: ethers.toBeHex(nonceStart + idx),
-            callData: walletCallData[action]
+            nonce: ethers.toBeHex(nonceStart + i),
+            callData: walletCallData[action],
+            maxFeePerGas: ethers.toBeHex(fee)
         };
 
-        console.log(`📤 傳送 UserOp #${idx} (${action})`);
+        console.log(`📤 傳送 UserOp #${i} (${action}) maxFeePerGas=${fee}`);
         await axios.post("http://localhost:3000/", {
             jsonrpc: "2.0",
-            id: idx + 1,
+            id: i + 1,
             method: "eth_sendUserOperation",
             params: [userOp, ENTRY_POINT_ADDRESS]
         });
-    }));
+    }
 
     console.log("✅ 所有 UserOperation 已送出");
 }

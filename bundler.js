@@ -3,7 +3,7 @@ const ethers = require('ethers');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 
-// === 載入部署資訊 ===
+// === 讀取部署資訊 ===
 const deployInfo = JSON.parse(fs.readFileSync('deploy.json'));
 const ENTRY_POINT_ADDRESS = deployInfo.entryPoint;
 const COUNTER_ADDRESS = deployInfo.counter;
@@ -18,17 +18,13 @@ const counterABI = [
     "function decrease()",
     "event NumberChanged(string action, uint256 newValue)"
 ];
-
-const walletABI = [
-    "function execute(address target, bytes data)"
-];
-
+const walletABI = ["function execute(address target, bytes data)"];
 const entryPointABI = [
     "function handleOps((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes)[] ops, address beneficiary)",
     "event UserOpHandled(address indexed sender, bool success, string reason)"
 ];
 
-// === 初始化 ===
+// === 初始化
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
@@ -46,13 +42,11 @@ console.log("🛠️ Bundler 啟動中，使用 EntryPoint 地址:", ENTRY_POINT
 
 app.post('/', async (req, res) => {
     const { method, params } = req.body;
-
     if (method !== 'eth_sendUserOperation') {
         return res.status(400).send({ error: 'Only eth_sendUserOperation is supported' });
     }
 
     const [userOp, entryPointAddr] = params;
-
     if (entryPointAddr.toLowerCase() !== ENTRY_POINT_ADDRESS.toLowerCase()) {
         console.error(`❌ EntryPoint mismatch！收到: ${entryPointAddr} 期待: ${ENTRY_POINT_ADDRESS}`);
         return res.status(400).send({ error: 'EntryPoint address mismatch' });
@@ -63,33 +57,32 @@ app.post('/', async (req, res) => {
     res.send({ result: "UserOperation queued" });
 });
 
-// === 每3秒批次送出 UserOps ===
+// === 每 3 秒處理一次批次
 setInterval(async () => {
     if (pendingUserOps.length === 0 || isHandling) return;
     isHandling = true;
 
     try {
-        console.log("🧾 正在處理 UserOperations:");
-        const opLabels = [];
+        // ✅ 修正排序：用 BigInt 比較 maxFeePerGas（不回傳 BigInt）
+        pendingUserOps.sort((a, b) => {
+            const aFee = BigInt(a.maxFeePerGas);
+            const bFee = BigInt(b.maxFeePerGas);
+            return aFee > bFee ? -1 : aFee < bFee ? 1 : 0;
+        });
 
+        console.log("🧾 正在處理 UserOperations（按 maxFeePerGas 排序）:");
         pendingUserOps.forEach((op, idx) => {
             try {
-                const decodedWalletCall = walletInterface.decodeFunctionData("execute", op.callData);
-                const target = decodedWalletCall.target;
-                const innerData = decodedWalletCall.data;
-
+                const decoded = walletInterface.decodeFunctionData("execute", op.callData);
+                const target = decoded.target;
+                const innerData = decoded.data;
                 let label = "unknown";
                 if (target.toLowerCase() === COUNTER_ADDRESS.toLowerCase()) {
-                    try {
-                        const parsed = counterInterface.parseTransaction({ data: innerData });
-                        label = parsed.name;
-                    } catch {}
+                    const parsed = counterInterface.parseTransaction({ data: innerData });
+                    label = parsed.name;
                 }
-
-                opLabels.push(label);
-                console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, 呼叫: ${label}`);
+                console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, 呼叫: ${label}, maxFeePerGas: ${BigInt(op.maxFeePerGas)}`);
             } catch {
-                opLabels.push("unparsed");
                 console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, callData 無法解譯`);
             }
         });
@@ -117,27 +110,18 @@ setInterval(async () => {
         });
 
         console.log(`📤 批次送出 ${pendingUserOps.length} 筆 UserOperation! txHash: ${tx.hash}`);
-
         const receipt = await tx.wait();
-
-        for (const log of receipt.logs) {
-            try {
-                const parsed = entryPointInterface.parseLog(log);
-                if (parsed.name === "UserOpHandled") {
-                    const sender = parsed.args.sender;
-                    const success = parsed.args.success;
-                    const reason = parsed.args.reason;
-                    const index = pendingUserOps.findIndex(op => op.sender.toLowerCase() === sender.toLowerCase());
-                    const label = opLabels[index] || "unknown";
-                    console.log(`📣 [UserOpHandled] ${label.padEnd(8)} sender=${sender}, 成功=${success}, 原因=${reason}`);
-                }
-            } catch {}
-        }
 
         for (const log of receipt.logs) {
             try {
                 const parsed = counterInterface.parseLog(log);
                 console.log(`📊 [Counter 事件] ${parsed.args.action}: ${parsed.args.newValue.toString()}`);
+            } catch {}
+            try {
+                const parsed = entryPointInterface.parseLog(log);
+                if (parsed.name === "UserOpHandled") {
+                    console.log(`📣 [UserOpHandled] sender=${parsed.args.sender} 成功=${parsed.args.success} 原因=${parsed.args.reason}`);
+                }
             } catch {}
         }
 
@@ -148,7 +132,6 @@ setInterval(async () => {
         pendingUserOps = [];
         isHandling = false;
     }
-
 }, 3000);
 
 app.listen(PORT, () => {
