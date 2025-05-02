@@ -3,7 +3,7 @@ const ethers = require('ethers');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 
-// === 讀取部署資訊 ===
+// === 載入部署資訊 ===
 const deployInfo = JSON.parse(fs.readFileSync('deploy.json'));
 const ENTRY_POINT_ADDRESS = deployInfo.entryPoint;
 const COUNTER_ADDRESS = deployInfo.counter;
@@ -23,19 +23,24 @@ const walletABI = [
     "function execute(address target, bytes data)"
 ];
 
-// === 初始化 provider 和 signer ===
+const entryPointABI = [
+    "function handleOps((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes)[] ops, address beneficiary)",
+    "event UserOpHandled(address indexed sender, bool success, string reason)"
+];
+
+// === 初始化 ===
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-// === 初始化 Interface
 const counterInterface = new ethers.Interface(counterABI);
 const walletInterface = new ethers.Interface(walletABI);
+const entryPointInterface = new ethers.Interface(entryPointABI);
 
-// === Express 啟動 ===
 const app = express();
 app.use(bodyParser.json());
 
 let pendingUserOps = [];
+let isHandling = false;
 
 console.log("🛠️ Bundler 啟動中，使用 EntryPoint 地址:", ENTRY_POINT_ADDRESS);
 
@@ -58,14 +63,15 @@ app.post('/', async (req, res) => {
     res.send({ result: "UserOperation queued" });
 });
 
-// === 每3秒執行一次 handleOps ===
+// === 每3秒批次送出 UserOps ===
 setInterval(async () => {
-    if (pendingUserOps.length === 0) return;
+    if (pendingUserOps.length === 0 || isHandling) return;
+    isHandling = true;
 
     try {
         console.log("🧾 正在處理 UserOperations:");
+        const opLabels = [];
 
-        // 嘗試解析 callData 內容
         pendingUserOps.forEach((op, idx) => {
             try {
                 const decodedWalletCall = walletInterface.decodeFunctionData("execute", op.callData);
@@ -80,13 +86,14 @@ setInterval(async () => {
                     } catch {}
                 }
 
+                opLabels.push(label);
                 console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, 呼叫: ${label}`);
             } catch {
+                opLabels.push("unparsed");
                 console.log(`  #${idx} - nonce: ${parseInt(op.nonce)}, callData 無法解譯`);
             }
         });
 
-        // 呼叫 handleOps
         const userOpsArray = pendingUserOps.map(op => [
             op.sender,
             op.nonce,
@@ -101,10 +108,6 @@ setInterval(async () => {
             op.signature
         ]);
 
-        const entryPointInterface = new ethers.Interface([
-            "function handleOps((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes)[] ops, address beneficiary)"
-        ]);
-
         const calldata = entryPointInterface.encodeFunctionData("handleOps", [userOpsArray, wallet.address]);
 
         const tx = await wallet.sendTransaction({
@@ -117,25 +120,37 @@ setInterval(async () => {
 
         const receipt = await tx.wait();
 
-        // 印出 Counter 合約的事件
+        for (const log of receipt.logs) {
+            try {
+                const parsed = entryPointInterface.parseLog(log);
+                if (parsed.name === "UserOpHandled") {
+                    const sender = parsed.args.sender;
+                    const success = parsed.args.success;
+                    const reason = parsed.args.reason;
+                    const index = pendingUserOps.findIndex(op => op.sender.toLowerCase() === sender.toLowerCase());
+                    const label = opLabels[index] || "unknown";
+                    console.log(`📣 [UserOpHandled] ${label.padEnd(8)} sender=${sender}, 成功=${success}, 原因=${reason}`);
+                }
+            } catch {}
+        }
+
         for (const log of receipt.logs) {
             try {
                 const parsed = counterInterface.parseLog(log);
                 console.log(`📊 [Counter 事件] ${parsed.args.action}: ${parsed.args.newValue.toString()}`);
-            } catch (e) {
-                // 非 counter 事件，忽略
-            }
+            } catch {}
         }
 
     } catch (err) {
         console.error("❌ 批次送出失敗:", err.reason || err.message || err);
     } finally {
-        // 清空佇列
+        console.log(`🧹 清空 pendingUserOps (${pendingUserOps.length} 筆)`);
         pendingUserOps = [];
+        isHandling = false;
     }
+
 }, 3000);
 
-// === 啟動伺服器 ===
 app.listen(PORT, () => {
     console.log(`🚀 Bundler server listening at http://localhost:${PORT}`);
 });

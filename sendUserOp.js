@@ -25,7 +25,7 @@ async function main() {
     const nonceStart = await provider.getTransactionCount(SIMPLE_WALLET_ADDRESS);
 
     // 👉 修改這裡的順序和長度即可控制 TOD 模擬內容
-    const actions = ["decrease", "increase", "increase"]; // 多筆或重複都可以
+    const actions = ["increase", "decrease", "decrease", "decrease"]; // 多筆或重複都可以
 
     const baseUserOp = {
         sender: SIMPLE_WALLET_ADDRESS,
