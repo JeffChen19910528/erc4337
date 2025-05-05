@@ -29,7 +29,8 @@ async function main() {
         { action: "increase", fee: 10_000_000_000 },  // 高手續費
         { action: "decrease", fee: 9_000_000_000 },
         { action: "decrease", fee: 8_000_000_000 },
-        { action: "decrease", fee: 7_000_000_000 }     // 最低手續費
+        { action: "decrease", fee: 7_000_000_000 },     // 最低手續費
+        { action: "decrease", fee: 8_000_000_000 }
     ];
 
     const baseUserOp = {

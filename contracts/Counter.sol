@@ -16,9 +16,4 @@ contract Counter {
         number -= 5; // 改為減5
         emit NumberChanged("decrease", number);
     }
-
-    function reset() public {
-        number = 0;
-        emit NumberChanged("reset", number);
-    }
 }

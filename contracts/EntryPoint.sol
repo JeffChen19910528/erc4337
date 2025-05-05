@@ -20,29 +20,29 @@ contract EntryPoint {
 
     function handleOps(UserOperation[] calldata ops, address beneficiary) external {
         for (uint256 i = 0; i < ops.length; i++) {
-            bool success = true;
+            bool success;
             string memory reason = "";
 
-            try this._execute(ops[i]) {
-                // OK
-            } catch Error(string memory err) {
-                success = false;
-                reason = err;
-            } catch {
-                success = false;
-                reason = "Unknown error";
+            (bool callSuccess, bytes memory ret) = ops[i].sender.call{gas: ops[i].callGasLimit}(ops[i].callData);
+            success = callSuccess;
+
+            if (!callSuccess) {
+                if (ret.length >= 68) {
+                    assembly {
+                        ret := add(ret, 0x04)
+                    }
+                    reason = abi.decode(ret, (string));
+                } else {
+                    reason = "Execution failed";
+                }
             }
 
             emit UserOpHandled(ops[i].sender, success, reason);
         }
 
-        payable(beneficiary).transfer(0);
-    }
-
-    function _execute(UserOperation calldata op) external {
-        require(msg.sender == address(this), "not allowed");
-        (bool success,) = op.sender.call(op.callData);
-        require(success, "Call failed");
+        if (beneficiary != address(0)) {
+            payable(beneficiary).transfer(0);
+        }
     }
 
     receive() external payable {}
