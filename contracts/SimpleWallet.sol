@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.20;
+
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "./EntryPoint.sol"; // 假設你與 EntryPoint 在同個目錄下
 
 contract SimpleWallet {
+    using MessageHashUtils for bytes32;
+
     address public owner;
     address public entryPoint;
-
     uint256 public nonce;
 
     constructor(address _owner, address _entryPoint) {
@@ -13,23 +18,26 @@ contract SimpleWallet {
     }
 
     function validateUserOp(
-        bytes calldata, 
-        bytes32, 
-        uint256 userOpNonce
+        EntryPoint.UserOperation calldata userOp,
+        bytes32 userOpHash,
+        uint256 /* missingFunds */
     ) external returns (uint256 validUntil, uint256 validAfter) {
-        require(msg.sender == entryPoint, "Caller not EntryPoint");
-        require(userOpNonce == nonce, "Invalid nonce");
-        nonce++;
-        return (type(uint256).max, 0);
+        require(msg.sender == entryPoint, "Caller is not EntryPoint");
+        require(userOp.nonce == nonce, "Invalid nonce");
+
+        // 驗證簽章：hash 需轉成符合 signMessage() 的格式
+        address recovered = ECDSA.recover(userOpHash.toEthSignedMessageHash(), userOp.signature);
+        require(recovered == owner, "Invalid signature");
+
+        nonce++; // 驗證成功後增加 nonce
+        return (type(uint256).max, 0); // 永久有效
     }
 
     function execute(address target, bytes calldata data) external {
-        require(msg.sender == owner || msg.sender == entryPoint, "Not authorized");
+        require(msg.sender == entryPoint || msg.sender == owner, "Not authorized");
         (bool success, ) = target.call(data);
         require(success, "Call failed");
     }
-
-    function deposit() external payable {}
 
     receive() external payable {}
 }

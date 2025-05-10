@@ -87,6 +87,10 @@ setInterval(async () => {
             }
         });
 
+        console.log("📦 傳送 handleOps(...) 中包含的 senders:");
+        pendingUserOps.forEach(op => {
+            console.log(`   - ${op.sender} | nonce: ${op.nonce}`);
+        });
         const userOpsArray = pendingUserOps.map(op => [
             op.sender,
             op.nonce,

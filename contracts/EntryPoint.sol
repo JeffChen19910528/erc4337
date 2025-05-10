@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.20;
+
+interface IWallet {
+    function validateUserOp(
+        EntryPoint.UserOperation calldata userOp,
+        bytes32 userOpHash,
+        uint256 missingFunds
+    ) external returns (uint256 validUntil, uint256 validAfter);
+}
 
 contract EntryPoint {
     event UserOpHandled(address indexed sender, bool success, string reason);
@@ -20,24 +28,43 @@ contract EntryPoint {
 
     function handleOps(UserOperation[] calldata ops, address beneficiary) external {
         for (uint256 i = 0; i < ops.length; i++) {
-            bool success;
+            UserOperation calldata op = ops[i];
             string memory reason = "";
+            bool success = false;
 
-            (bool callSuccess, bytes memory ret) = ops[i].sender.call{gas: ops[i].callGasLimit}(ops[i].callData);
-            success = callSuccess;
+            bytes32 userOpHash = keccak256(abi.encode(
+                op.sender,
+                op.nonce,
+                op.initCode,
+                op.callData,
+                op.callGasLimit,
+                op.verificationGasLimit,
+                op.preVerificationGas,
+                op.maxFeePerGas,
+                op.maxPriorityFeePerGas,
+                op.paymasterAndData
+            ));
 
-            if (!callSuccess) {
-                if (ret.length >= 68) {
-                    assembly {
-                        ret := add(ret, 0x04)
+            try IWallet(op.sender).validateUserOp(op, userOpHash, 0) {
+                (bool callSuccess, bytes memory ret) = op.sender.call{gas: op.callGasLimit}(op.callData);
+                success = callSuccess;
+                if (!callSuccess) {
+                    if (ret.length >= 68) {
+                        assembly {
+                            ret := add(ret, 0x04)
+                        }
+                        reason = abi.decode(ret, (string));
+                    } else {
+                        reason = "Execution failed";
                     }
-                    reason = abi.decode(ret, (string));
-                } else {
-                    reason = "Execution failed";
                 }
+            } catch Error(string memory err) {
+                reason = err;
+            } catch {
+                reason = "Validation failed";
             }
 
-            emit UserOpHandled(ops[i].sender, success, reason);
+            emit UserOpHandled(op.sender, success, reason);
         }
 
         if (beneficiary != address(0)) {

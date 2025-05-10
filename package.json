@@ -10,8 +10,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@openzeppelin/contracts": "^5.3.0",
     "axios": "^1.9.0",
     "body-parser": "^2.2.0",
+    "dotenv": "^16.5.0",
     "ethers": "^6.13.7",
     "express": "^5.1.0"
   },
