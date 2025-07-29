@@ -1,22 +1,31 @@
-const ethers = require('ethers');
-const fs = require('fs');
+const { ethers } = require("ethers");
+const fs = require("fs");
 
 async function main() {
     const RPC_URL = "http://localhost:8545";
     const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const signer = await provider.getSigner(0); // ✅ 使用部署時的 signer
+    const signer = await provider.getSigner(0); // ✅ 使用 Hardhat node 的第 0 個帳戶作為出資者
 
-    const deployInfo = JSON.parse(fs.readFileSync('deploy.json'));
-    const walletAddress = deployInfo.wallet;
+    const deployInfo = JSON.parse(fs.readFileSync("deploy.json"));
+    const wallets = deployInfo.wallets;
 
-    console.log("💰 要轉帳到 SimpleWallet 地址:", walletAddress);
+    if (!wallets || wallets.length === 0) {
+        console.error("❌ deploy.json 中未找到任何 wallets");
+        return;
+    }
 
-    const tx = await signer.sendTransaction({
-        to: walletAddress,
-        value: ethers.parseEther("1.0")
-    });
+    for (const w of wallets) {
+        console.log(`💰 正在轉帳到 SimpleWallet (${w.name}) 地址: ${w.walletAddress}`);
 
-    console.log("✅ 已轉帳；txHash:", tx.hash);
+        const tx = await signer.sendTransaction({
+            to: w.walletAddress,
+            value: ethers.parseEther("1.0") // 轉帳 1 ETH
+        });
+
+        console.log(`✅ 已轉帳給 ${w.name}；txHash: ${tx.hash}`);
+    }
+
+    console.log("\n🎉 所有 SimpleWallet 已轉帳完成");
 }
 
 main().catch(console.error);

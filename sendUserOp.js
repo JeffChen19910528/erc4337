@@ -1,28 +1,21 @@
 const ethers = require("ethers");
 const axios = require("axios");
 const fs = require("fs");
-require("dotenv").config(); // ⬅️ 載入 .env 中的 PRIVATE_KEY
 
 async function main() {
     const RPC_URL = "http://localhost:8545";
     const provider = new ethers.JsonRpcProvider(RPC_URL);
 
-    // 讀取部署資訊
+    // === 讀取部署資訊 ===
     const deployInfo = JSON.parse(fs.readFileSync("deploy.json"));
     const ENTRY_POINT_ADDRESS = deployInfo.entryPoint;
     const COUNTER_ADDRESS = deployInfo.counter;
-    const SIMPLE_WALLET_ADDRESS = deployInfo.wallet;
+    const wallets = deployInfo.wallets;
 
-    // 使用 .env 中的私鑰產生 signer
-    const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-
-    // 建立合約介面
     const counterIface = new ethers.Interface(["function increase()", "function decrease()"]);
     const walletIface = new ethers.Interface(["function execute(address target, bytes data)"]);
     const simpleWalletIface = new ethers.Interface(["function nonce() view returns (uint256)"]);
-    const simpleWallet = new ethers.Contract(SIMPLE_WALLET_ADDRESS, simpleWalletIface, provider);
 
-    // 轉換 calldata
     const increaseData = counterIface.encodeFunctionData("increase");
     const decreaseData = counterIface.encodeFunctionData("decrease");
 
@@ -31,41 +24,59 @@ async function main() {
         decrease: walletIface.encodeFunctionData("execute", [COUNTER_ADDRESS, decreaseData])
     };
 
-    // ✅ 正確從 SimpleWallet 合約中取得 nonce
-    const nonceStart = await simpleWallet.nonce();
+    // A/B 錢包設定
+    const walletMap = {};
+    for (const w of wallets) {
+        walletMap[w.name] = {
+            signer: new ethers.Wallet(w.privateKey, provider),
+            address: w.address,
+            walletAddress: w.walletAddress,
+            contract: new ethers.Contract(w.walletAddress, simpleWalletIface, provider),
+        };
+    }
 
-    // 模擬多筆不同手續費的操作
+    // 指定交錯順序與參數
     const actions = [
-        { action: "increase", fee: 10_000_000_000 },
-        { action: "decrease", fee: 9_000_000_000 },
-        { action: "decrease", fee: 8_000_000_000 },
-        { action: "decrease", fee: 7_000_000_000 },
-        { action: "decrease", fee: 8_000_000_000 }
+        { wallet: "A", action: "increase", fee: 12e9 }, // 1
+        { wallet: "B", action: "decrease", fee: 12e9 }, // 2
+        { wallet: "A", action: "increase", fee: 10e9 }, // 4
+        { wallet: "B", action: "decrease", fee: 11e9 }, // 3
+        { wallet: "A", action: "decrease", fee: 10e9 }, // 5
+        { wallet: "B", action: "decrease", fee: 10e9 }, // 6
+        { wallet: "A", action: "increase", fee: 9e9 },  // 7
+        { wallet: "B", action: "decrease", fee: 7e9 },  // 8
+        { wallet: "B", action: "decrease", fee: 6e9 },  // 9
+        { wallet: "A", action: "increase", fee: 8e9 }   // 10
     ];
 
-    // 共用欄位
-    const baseUserOp = {
-        sender: SIMPLE_WALLET_ADDRESS,
-        initCode: "0x",
-        callGasLimit: ethers.toBeHex(150000),
-        verificationGasLimit: ethers.toBeHex(150000),
-        preVerificationGas: ethers.toBeHex(20000),
-        maxPriorityFeePerGas: ethers.toBeHex(1e9),
-        paymasterAndData: "0x",
-        signature: "0x"
-    };
+    // 預抓每個 wallet 的 nonce 起點
+    const nonceMap = {};
+    for (const name of Object.keys(walletMap)) {
+        nonceMap[name] = await walletMap[name].contract.nonce();
+    }
 
     for (let i = 0; i < actions.length; i++) {
-        const { action, fee } = actions[i];
+        const { wallet: walletName, action, fee } = actions[i];
+        const { signer, walletAddress } = walletMap[walletName];
+
+        const nonce = nonceMap[walletName];
+        nonceMap[walletName] = nonce + 1n; // 遞增
 
         const userOp = {
-            ...baseUserOp,
-            nonce: ethers.toBeHex(nonceStart + BigInt(i)), // ✅ 正確累加 nonce
+            sender: walletAddress,
+            nonce: ethers.toBeHex(nonce),
+            initCode: "0x",
             callData: walletCallData[action],
-            maxFeePerGas: ethers.toBeHex(fee)
+            callGasLimit: ethers.toBeHex(150000),
+            verificationGasLimit: ethers.toBeHex(150000),
+            preVerificationGas: ethers.toBeHex(20000),
+            maxFeePerGas: ethers.toBeHex(fee),
+            maxPriorityFeePerGas: ethers.toBeHex(1e9),
+            paymasterAndData: "0x",
+            signature: "0x"
         };
 
-        // ✅ Step 1: 建立 userOpHash（需與 Solidity 端一致）
+        // 建立 userOpHash
         const userOpHash = ethers.keccak256(
             ethers.AbiCoder.defaultAbiCoder().encode(
                 [
@@ -88,12 +99,10 @@ async function main() {
             )
         );
 
-        // ✅ Step 2: 進行符合 toEthSignedMessageHash 的簽章
-        const signature = await signer.signMessage(ethers.getBytes(userOpHash));
-        userOp.signature = signature;
+        // 簽章
+        userOp.signature = await signer.signMessage(ethers.getBytes(userOpHash));
 
-        // 發送 UserOperation 給本地 Bundler
-        console.log(`📤 傳送 UserOp #${i} (${action}) maxFeePerGas=${fee}`);
+        console.log(`📤 傳送 UserOp #${i + 1} | ${walletName} | ${action} | fee=${fee / 1e9} gwei`);
         await axios.post("http://localhost:3000/", {
             jsonrpc: "2.0",
             id: i + 1,
@@ -102,7 +111,7 @@ async function main() {
         });
     }
 
-    console.log("✅ 所有 UserOperation 已送出");
+    console.log("✅ 所有交錯 UserOperations 已送出");
 }
 
 main().catch(console.error);

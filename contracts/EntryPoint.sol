@@ -49,14 +49,7 @@ contract EntryPoint {
                 (bool callSuccess, bytes memory ret) = op.sender.call{gas: op.callGasLimit}(op.callData);
                 success = callSuccess;
                 if (!callSuccess) {
-                    if (ret.length >= 68) {
-                        assembly {
-                            ret := add(ret, 0x04)
-                        }
-                        reason = abi.decode(ret, (string));
-                    } else {
-                        reason = "Execution failed";
-                    }
+                    reason = _getRevertMsg(ret);
                 }
             } catch Error(string memory err) {
                 reason = err;
@@ -70,6 +63,15 @@ contract EntryPoint {
         if (beneficiary != address(0)) {
             payable(beneficiary).transfer(0);
         }
+    }
+
+    /// @dev Extracts revert reason from returned data
+    function _getRevertMsg(bytes memory _returnData) internal pure returns (string memory) {
+        if (_returnData.length < 68) return "Execution failed (no reason)";
+        assembly {
+            _returnData := add(_returnData, 0x04)
+        }
+        return abi.decode(_returnData, (string));
     }
 
     receive() external payable {}

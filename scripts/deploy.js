@@ -1,39 +1,64 @@
 const hre = require("hardhat");
 const fs = require("fs");
+require("dotenv").config();
 
 async function main() {
-    const [deployer] = await hre.ethers.getSigners();
-    console.log("🚀 使用部署帳號:", deployer.address);
+    const provider = hre.ethers.provider;
 
-    const contracts = {};
+    const wallets = [
+        {
+            name: "A",
+            privateKey: process.env.PRIVATE_KEY_A,
+            signer: new hre.ethers.Wallet(process.env.PRIVATE_KEY_A, provider)
+        },
+        {
+            name: "B",
+            privateKey: process.env.PRIVATE_KEY_B,
+            signer: new hre.ethers.Wallet(process.env.PRIVATE_KEY_B, provider)
+        }
+    ];
 
-    // 1. 部署 EntryPoint
+    const deployResult = {};
+
+    // 部署 EntryPoint
     const EntryPoint = await hre.ethers.getContractFactory("EntryPoint");
     const entryPoint = await EntryPoint.deploy();
     await entryPoint.waitForDeployment();
-    contracts.entryPoint = await entryPoint.getAddress();
-    console.log("✅ EntryPoint 部署完成:", contracts.entryPoint);
+    const entryPointAddress = await entryPoint.getAddress();
+    console.log("✅ EntryPoint 部署完成:", entryPointAddress);
+    deployResult.entryPoint = entryPointAddress;
 
-    // 2. 部署 Counter
+    // 部署 Counter
     const Counter = await hre.ethers.getContractFactory("Counter");
     const counter = await Counter.deploy();
     await counter.waitForDeployment();
-    contracts.counter = await counter.getAddress();
-    console.log("✅ Counter 部署完成:", contracts.counter);
+    const counterAddress = await counter.getAddress();
+    console.log("✅ Counter 部署完成:", counterAddress);
+    deployResult.counter = counterAddress;
 
-    // 3. 部署 SimpleWallet
+    // 部署多個 SimpleWallet
+    deployResult.wallets = [];
     const SimpleWallet = await hre.ethers.getContractFactory("SimpleWallet");
-    const wallet = await SimpleWallet.deploy(deployer.address, contracts.entryPoint);
-    await wallet.waitForDeployment();
-    contracts.wallet = await wallet.getAddress();
-    console.log("✅ SimpleWallet 部署完成:", contracts.wallet);
 
-    // 寫入 deploy.json
-    fs.writeFileSync("deploy.json", JSON.stringify(contracts, null, 2));
-    console.log("\n📦 所有合約已部署，資訊已寫入 deploy.json");
+    for (const w of wallets) {
+        const wallet = await SimpleWallet.connect(w.signer).deploy(await w.signer.getAddress(), entryPointAddress);
+        await wallet.waitForDeployment();
+        const walletAddress = await wallet.getAddress();
+        console.log(`✅ SimpleWallet (${w.name}) 部署完成:`, walletAddress);
+
+        deployResult.wallets.push({
+            name: w.name,
+            address: await w.signer.getAddress(),
+            privateKey: w.privateKey,
+            walletAddress: walletAddress
+        });
+    }
+
+    fs.writeFileSync("deploy.json", JSON.stringify(deployResult, null, 2));
+    console.log("\n📦 所有合約與錢包已部署完成，資訊已寫入 deploy.json");
 }
 
 main().catch((error) => {
-    console.error("❌ 部署發生錯誤:", error);
+    console.error("❌ 部署失敗:", error);
     process.exit(1);
 });

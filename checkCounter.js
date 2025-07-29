@@ -25,16 +25,26 @@ async function main() {
     console.log("🔍 解析 EntryPoint 中最近的 UserOpHandled 事件...");
 
     const latest = await provider.getBlockNumber();
-    const startBlock = Math.max(0, latest - 1000); // ✅ 避免負數區塊
+    const startBlock = Math.max(0, latest - 1000);
 
     const logs = await entryPoint.queryFilter("UserOpHandled", startBlock, latest);
 
     if (logs.length === 0) {
         console.log("⚠️ 沒有找到 UserOpHandled 事件");
     } else {
+        logs.sort((a, b) =>
+            a.blockNumber - b.blockNumber ||
+            a.transactionIndex - b.transactionIndex
+        );
+
         for (const log of logs) {
             const { sender, success, reason } = log.args;
-            console.log(`📣 sender=${sender}, 成功=${success}, 原因=${reason}`);
+            const block = await log.getBlock();
+            const ts = new Date(block.timestamp * 1000).toISOString();
+            console.log(`🧾 [${ts}] block=${log.blockNumber} txIndex=${log.transactionIndex}`);
+            console.log(`   ↳ sender=${sender}`);
+            console.log(`   ↳ 成功=${success}`);
+            console.log(`   ↳ 原因=${reason || '(空)'}`);
         }
     }
 }
