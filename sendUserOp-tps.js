@@ -63,7 +63,7 @@ async function sendSegment(actions, walletMap, walletCallData, counterIface, ENT
         }
 
         // === 每組10筆交易送出後暫停1秒 ===
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 3000));
     }
 }
 
