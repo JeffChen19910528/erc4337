@@ -1,2 +1,8 @@
 node_modules
-node_modules
+artifacts
+cache
+deploy.json
+tps-log.json
+tps-log.xlsx
+.env
+.claude_recovery/
